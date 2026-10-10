@@ -89,3 +89,33 @@ def test_log_lines_out_of_range(tmp_path):
     c = make(tmp_path)
     assert c.get("/api/log?lines=0").status_code == 422
     assert c.get("/api/log?lines=5000").status_code == 422
+
+
+# ---- Task 4: load / unload / chat ----
+def test_load_ok_and_unload_ok(tmp_path):
+    c = make(tmp_path)
+    assert c.post("/api/load", json={"model": "qwen3.5:9b"}).json() == {"ok": True}
+    assert c.post("/api/unload", json={"model": "qwen3.5:9b"}).json() == {"ok": True}
+
+
+def test_load_unknown_model_502(tmp_path):
+    r = make(tmp_path).post("/api/load", json={"model": "nope"})
+    assert r.status_code == 502 and "not found" in r.json()["detail"]
+
+
+def test_load_missing_body_422(tmp_path):
+    assert make(tmp_path).post("/api/load", json={}).status_code == 422
+
+
+def test_chat_streams_ndjson(tmp_path):
+    with make(tmp_path).stream("POST", "/api/chat", json={"model": "qwen3.5:9b", "prompt": "hi"}) as r:
+        assert r.headers["content-type"].startswith("application/x-ndjson")
+        lines = [json.loads(l) for l in r.iter_lines() if l]
+    assert lines[0]["message"]["content"] == "hi"
+    assert lines[-1]["done"] is True and lines[-1]["eval_count"] == 2
+
+
+def test_chat_unknown_model_emits_error_chunk(tmp_path):
+    with make(tmp_path).stream("POST", "/api/chat", json={"model": "nope", "prompt": "hi"}) as r:
+        lines = [json.loads(l) for l in r.iter_lines() if l]
+    assert len(lines) == 1 and "not found" in lines[0]["error"]
