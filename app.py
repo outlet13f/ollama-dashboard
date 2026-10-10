@@ -11,10 +11,10 @@ from typing import Callable
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from collectors import OllamaClient, OllamaError, default_log_path, parse_env_from_log, read_gpu, tail_log
+from collectors import EnvTracker, OllamaClient, OllamaError, default_log_path, read_gpu, tail_log
 
-ENV_SCAN_LINES = 2000  # how far back to look for Ollama's startup config line
 INDEX_HTML = Path(__file__).parent / "static" / "index.html"
 DEFAULT_PORT = 8585
 
@@ -32,7 +32,9 @@ def create_app(client: OllamaClient,
                gpu_reader: Callable[[], dict | None] = read_gpu,
                log_path: Path | None = None) -> FastAPI:
     app = FastAPI(title="Ollama Dashboard")
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
     log_file = log_path or default_log_path()
+    env_tracker = EnvTracker(log_file)
 
     async def _safe(coro, default):
         try:
@@ -50,24 +52,25 @@ def create_app(client: OllamaClient,
 
     @app.get("/api/status")
     async def status():
-        version, loaded, models, gpu, log_lines = await asyncio.gather(
+        version, loaded, models, gpu, env = await asyncio.gather(
             _safe(client.version(), None),
             _safe(client.ps(), []),
             _safe(client.tags(), []),
             _safe(asyncio.to_thread(gpu_reader), None),
-            _safe(asyncio.to_thread(tail_log, log_file, ENV_SCAN_LINES), None),
+            _safe(asyncio.to_thread(env_tracker.read), {}),
         )
         return {
             "ollama": {"online": version is not None, "version": version},
-            "env": parse_env_from_log(log_lines or []),
+            "env": env,
             "gpu": gpu,
             "loaded": loaded,
             "models": models,
         }
 
     @app.get("/api/log")
-    async def log(lines: int = Query(100, ge=1, le=1000)):
-        result = await asyncio.to_thread(tail_log, log_file, lines)
+    async def log(lines: int = Query(100, ge=1, le=1000),
+                  exclude: str | None = Query(None, max_length=100)):
+        result = await asyncio.to_thread(tail_log, log_file, lines, exclude or None)
         return {"path": str(log_file), "lines": result}
 
     @app.post("/api/load")

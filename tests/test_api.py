@@ -50,7 +50,7 @@ def make(tmp_path, handler=ollama_ok, gpu=lambda: GPU_FIXED, write_log=True):
         log.write_text("boot\n" + ENV_LINE + "\n" + "\n".join(f"line{i}" for i in range(200)), encoding="utf-8")
     client = OllamaClient("http://ollama.test", transport=httpx.MockTransport(handler))
     app = create_app(client, gpu_reader=gpu, log_path=log)
-    return TestClient(app)
+    return TestClient(app, base_url="http://127.0.0.1")
 
 
 def test_status_online(tmp_path):
@@ -130,3 +130,26 @@ def test_root_serves_html(tmp_path):
 
 def test_favicon_returns_204_not_404(tmp_path):
     assert make(tmp_path).get("/favicon.ico").status_code == 204
+
+
+# ---- Final review fixes ----
+def test_foreign_host_header_rejected(tmp_path):
+    c = make(tmp_path)
+    assert c.get("/api/log", headers={"Host": "evil.example:8585"}).status_code == 400
+    assert c.get("/api/log", headers={"Host": "localhost:8585"}).status_code == 200
+
+
+def test_log_exclude_param(tmp_path):
+    log = tmp_path / "server.log"
+    log.write_text("\n".join(["keep1", "keep2"] + ["[GIN] noise"] * 500) + "\n", encoding="utf-8")
+    client = OllamaClient("http://ollama.test", transport=httpx.MockTransport(ollama_ok))
+    c = TestClient(create_app(client, gpu_reader=lambda: None, log_path=log), base_url="http://127.0.0.1")
+    assert c.get("/api/log?lines=10&exclude=%5BGIN%5D").json()["lines"] == ["keep1", "keep2"]
+
+
+def test_status_env_survives_log_flood(tmp_path):
+    log = tmp_path / "server.log"
+    log.write_text(ENV_LINE + "\n" + "\n".join(["[GIN] noise"] * 2500) + "\n", encoding="utf-8")
+    client = OllamaClient("http://ollama.test", transport=httpx.MockTransport(ollama_ok))
+    c = TestClient(create_app(client, gpu_reader=lambda: None, log_path=log), base_url="http://127.0.0.1")
+    assert c.get("/api/status").json()["env"]["OLLAMA_KV_CACHE_TYPE"] == "q8_0"

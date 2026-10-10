@@ -112,6 +112,16 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;
 
 let loadedNames = new Set();
 let busy = false;
+const pending = new Map();   // model -> 'load' | 'unload' while a request is in flight
+const errors = new Map();    // model -> last error message, cleared on next action
+
+function actionCell(act, model) {
+  const label = act === 'load' ? '로드' : '언로드';
+  const p = pending.get(model);
+  const btn = p ? `<button disabled>${label} 중…</button>` : `<button data-act="${act}" data-model="${esc(model)}">${label}</button>`;
+  const err = errors.get(model) ? `<span class="err">${esc(errors.get(model))}</span>` : '';
+  return btn + err;
+}
 
 function renderHeader(d) {
   const on = d.ollama.online;
@@ -149,7 +159,7 @@ function renderLoaded(list) {
     const ratio = m.size ? Math.round((m.size_vram || 0) / m.size * 100) : 0;
     return `<tr><td>${esc(m.name)}</td><td>${esc(det.parameter_size || '')}</td><td>${esc(det.quantization_level || '')}</td>
       <td class="num">${gb(m.size_vram || 0)}</td><td class="num">${ratio}%</td><td class="num">${m.context_length ?? ''}</td>
-      <td><button data-act="unload" data-model="${esc(m.name)}">언로드</button><span class="err" id="err-u-${esc(m.name)}"></span></td></tr>`;
+      <td>${actionCell('unload', m.name)}</td></tr>`;
   }).join('');
 }
 
@@ -159,7 +169,7 @@ function renderModels(list) {
     const on = loadedNames.has(m.name);
     return `<tr><td>${esc(m.name)}</td><td class="num">${gb(m.size || 0)}</td><td>${esc(det.family || '')}</td><td>${esc(det.parameter_size || '')}</td>
       <td>${on ? '<span class="badge">로드됨</span>' : ''}</td>
-      <td>${on ? '' : `<button data-act="load" data-model="${esc(m.name)}">로드</button>`}<span class="err" id="err-l-${esc(m.name)}"></span></td></tr>`;
+      <td>${on ? '' : actionCell('load', m.name)}</td></tr>`;
   }).join('');
   const sel = $('model-select'), cur = sel.value;
   sel.innerHTML = list.map(m => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join('');
@@ -180,30 +190,29 @@ async function pollLog() {
   if (!$('log-auto').checked) return;
   try {
     const hideGin = $('log-hide-gin').checked;
-    const d = await (await fetch('/api/log?lines=' + (hideGin ? 400 : 100))).json();
+    const d = await (await fetch('/api/log?lines=100' + (hideGin ? '&exclude=' + encodeURIComponent('[GIN]') : ''))).json();
     $('log-path').textContent = d.path;
     if (d.lines === null) { $('log').textContent = '로그 파일을 찾을 수 없음: ' + d.path; return; }
     const f = $('log-filter').value.trim();
-    let lines = hideGin ? d.lines.filter(l => !l.includes('[GIN]')) : d.lines;
-    if (f) lines = lines.filter(l => l.includes(f));
-    lines = lines.slice(-100);
+    const lines = f ? d.lines.filter(l => l.includes(f)) : d.lines;
     const el = $('log'), stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 4;
-    el.textContent = lines.join('\n');
+    el.textContent = lines.length ? lines.join('\n') : '표시할 줄 없음';
     if (stick) el.scrollTop = el.scrollHeight;
   } catch (e) { /* keep last content */ }
 }
 
 async function modelAction(act, model) {
-  const err = $(`err-${act === 'load' ? 'l' : 'u'}-${model}`);
+  if (pending.has(model)) return;
+  pending.set(model, act); errors.delete(model);
   const btn = document.querySelector(`button[data-act="${act}"][data-model="${CSS.escape(model)}"]`);
-  if (btn) { btn.disabled = true; btn.textContent = act === 'load' ? '로드 중…' : '언로드 중…'; }
-  if (err) err.textContent = '';
+  if (btn) { btn.disabled = true; btn.textContent = (act === 'load' ? '로드' : '언로드') + ' 중…'; }
   try {
     const r = await fetch('/api/' + act, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model }) });
     if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.detail || r.statusText); }
   } catch (e) {
-    if (err) err.textContent = e.message;
-    if (btn) { btn.disabled = false; btn.textContent = act === 'load' ? '로드' : '언로드'; }
+    errors.set(model, e.message);
+  } finally {
+    pending.delete(model);
   }
   await pollStatus();
 }

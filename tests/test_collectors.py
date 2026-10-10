@@ -166,3 +166,66 @@ def test_read_gpu_parses(monkeypatch):
         stdout = "NVIDIA GeForce RTX 3080, 5, 1000, 10240, 40, 50.0, 320.0\n"
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: R())
     assert read_gpu()["util"] == 5
+
+
+# ---- Final review fixes ----
+from collectors import EnvTracker, normalize_host
+
+GIN = "[GIN] 2026/10/11 - 07:38:45 | 200 | 0s | 127.0.0.1 | GET \"/api/ps\""
+
+
+def test_env_tracker_finds_config_line_behind_thousands_of_gin_lines(tmp_path):
+    p = tmp_path / "server.log"
+    p.write_text("boot\n" + ENV_LINE + "\n" + "\n".join([GIN] * 2100) + "\n", encoding="utf-8")
+    env = EnvTracker(p).read()
+    assert env["OLLAMA_KV_CACHE_TYPE"] == "q8_0"
+
+
+def test_env_tracker_is_incremental_and_handles_rotation(tmp_path):
+    p = tmp_path / "server.log"
+    p.write_text(ENV_LINE + "\n", encoding="utf-8")
+    t = EnvTracker(p)
+    assert t.read()["OLLAMA_KV_CACHE_TYPE"] == "q8_0"
+    with p.open("a", encoding="utf-8") as f:
+        f.write("\n".join([GIN] * 50) + "\n")
+    assert t.read()["OLLAMA_KV_CACHE_TYPE"] == "q8_0"          # appended noise keeps cached env
+    with p.open("a", encoding="utf-8") as f:
+        f.write(ENV_LINE.replace("q8_0", "f16") + "\n")
+    assert t.read()["OLLAMA_KV_CACHE_TYPE"] == "f16"            # a newer config line wins
+    p.write_text("fresh start, no config yet\n", encoding="utf-8")  # rotated: smaller file
+    assert t.read() == {}
+    p.unlink()
+    assert t.read() == {}
+
+
+def test_tail_log_exclude_reads_back_past_noise(tmp_path):
+    p = tmp_path / "server.log"
+    p.write_text("\n".join(["real1", "real2"] + [GIN] * 3000) + "\n", encoding="utf-8")
+    assert tail_log(p, 10, exclude="[GIN]") == ["real1", "real2"]
+    assert tail_log(p, 1, exclude="[GIN]") == ["real2"]
+
+
+def test_tail_log_big_file_multibyte_at_block_boundary(tmp_path):
+    p = tmp_path / "server.log"
+    lines = [("한글줄%d " % i) * 20 for i in range(20000)]  # ~1.2 MB of multibyte text
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    assert tail_log(p, 3) == lines[-3:]
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (None, "http://127.0.0.1:11434"),
+    ("0.0.0.0", "http://127.0.0.1:11434"),
+    ("0.0.0.0:11434", "http://127.0.0.1:11434"),
+    ("http://0.0.0.0:11500", "http://127.0.0.1:11500"),
+    ("127.0.0.1", "http://127.0.0.1:11434"),
+    ("localhost:9999", "http://localhost:9999"),
+    ("http://gpu-box:11434", "http://gpu-box:11434"),
+    ("[::]:11434", "http://127.0.0.1:11434"),
+])
+def test_normalize_host(raw, expected):
+    assert normalize_host(raw) == expected
+
+
+def test_client_uses_normalized_env_host(monkeypatch):
+    monkeypatch.setenv("OLLAMA_HOST", "0.0.0.0")
+    assert OllamaClient().base_url == "http://127.0.0.1:11434"
