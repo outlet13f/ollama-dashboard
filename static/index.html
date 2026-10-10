@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ollama Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1115; --card: #171a21; --border: #262a33; --fg: #e6e8ec; --muted: #8a919e;
+    --accent: #4f8cff; --ok: #3ddc84; --bad: #ff5c5c; --warn: #ffb347; --bar: #2a2f3a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; }
+  header { display: flex; align-items: center; gap: 14px; padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--card); flex-wrap: wrap; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); display: inline-block; }
+  .dot.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .dot.off { background: var(--bad); box-shadow: 0 0 8px var(--bad); }
+  .title { font-weight: 600; font-size: 15px; }
+  .chip { background: var(--bar); border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; font-size: 12px; color: var(--muted); }
+  .chip b { color: var(--fg); font-weight: 500; }
+  main { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 16px 20px; max-width: 1400px; margin: 0 auto; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+  .card.wide { grid-column: 1 / -1; }
+  .card h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); display: flex; align-items: center; gap: 10px; }
+  .card h2 .right { margin-left: auto; display: flex; gap: 10px; align-items: center; font-size: 12px; text-transform: none; letter-spacing: 0; }
+  .row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+  .label { width: 70px; color: var(--muted); flex: none; }
+  .bar { flex: 1; height: 10px; background: var(--bar); border-radius: 5px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--accent); transition: width .4s; }
+  .bar > i.hot { background: var(--warn); }
+  .val { width: 110px; text-align: right; font-variant-numeric: tabular-nums; flex: none; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .badge { background: rgba(61,220,132,.15); color: var(--ok); border-radius: 4px; padding: 1px 8px; font-size: 12px; }
+  button { background: var(--bar); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 5px 12px; cursor: pointer; font: inherit; font-size: 13px; }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .err { color: var(--bad); font-size: 12px; margin-left: 6px; }
+  .muted { color: var(--muted); }
+  select, input[type=text], textarea { background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font: inherit; }
+  textarea { width: 100%; min-height: 70px; resize: vertical; }
+  #answer { white-space: pre-wrap; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px; min-height: 80px; max-height: 320px; overflow: auto; margin-top: 10px; }
+  #stats { margin-top: 8px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  #log { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font: 12px/1.45 ui-monospace, Consolas, monospace; max-height: 340px; overflow: auto; white-space: pre; color: #b9c0cc; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <span id="dot" class="dot"></span>
+  <span class="title">Ollama <span id="version" class="muted"></span></span>
+  <span id="online" class="muted">연결 중…</span>
+  <span class="chip">FLASH_ATTN <b id="env-fa">–</b></span>
+  <span class="chip">KV_CACHE <b id="env-kv">–</b></span>
+  <span class="chip">KEEP_ALIVE <b id="env-ka">–</b></span>
+  <span id="updated" class="muted" style="margin-left:auto;font-size:12px"></span>
+</header>
+
+<main>
+  <section class="card">
+    <h2>GPU <span id="gpu-name" class="right muted"></span></h2>
+    <div id="gpu-body">
+      <div class="row"><span class="label">사용률</span><div class="bar"><i id="gpu-util"></i></div><span class="val" id="gpu-util-v">–</span></div>
+      <div class="row"><span class="label">VRAM</span><div class="bar"><i id="gpu-mem"></i></div><span class="val" id="gpu-mem-v">–</span></div>
+      <div class="row"><span class="label">온도</span><span id="gpu-temp">–</span><span class="label" style="width:auto;margin-left:16px">전력</span><span id="gpu-power">–</span></div>
+    </div>
+    <div id="gpu-none" class="muted" hidden>GPU 정보 없음</div>
+  </section>
+
+  <section class="card">
+    <h2>로드된 모델</h2>
+    <table><thead><tr><th>모델</th><th>크기</th><th>양자화</th><th class="num">VRAM</th><th class="num">GPU</th><th class="num">ctx</th><th></th></tr></thead>
+    <tbody id="loaded"></tbody></table>
+    <div id="loaded-none" class="muted" hidden>로드된 모델 없음</div>
+  </section>
+
+  <section class="card wide">
+    <h2>보유 모델</h2>
+    <table><thead><tr><th>모델</th><th class="num">용량</th><th>패밀리</th><th>파라미터</th><th>상태</th><th></th></tr></thead>
+    <tbody id="models"></tbody></table>
+  </section>
+
+  <section class="card wide">
+    <h2>테스트 프롬프트
+      <span class="right"><select id="model-select"></select><button id="send" class="primary">보내기</button></span>
+    </h2>
+    <textarea id="prompt" placeholder="질문을 입력하세요">안녕하세요. 자기소개를 두 문장으로 해주세요.</textarea>
+    <div id="answer" class="muted">응답이 여기에 표시됩니다</div>
+    <div id="stats"></div>
+  </section>
+
+  <section class="card wide">
+    <h2>서버 로그 <span id="log-path" class="muted" style="font-size:11px;text-transform:none;letter-spacing:0"></span>
+      <span class="right">
+        <input id="log-filter" type="text" placeholder="필터" style="width:160px">
+        <label><input id="log-auto" type="checkbox" checked> 자동갱신</label>
+      </span>
+    </h2>
+    <div id="log"></div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const gb = bytes => (bytes / 1073741824).toFixed(1) + ' GB';
+const mibToGb = mib => (mib / 1024).toFixed(1);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+let loadedNames = new Set();
+let busy = false;
+
+function renderHeader(d) {
+  const on = d.ollama.online;
+  $('dot').className = 'dot ' + (on ? 'on' : 'off');
+  $('online').textContent = on ? '온라인' : '오프라인';
+  $('online').style.color = on ? 'var(--ok)' : 'var(--bad)';
+  $('version').textContent = d.ollama.version ? 'v' + d.ollama.version : '';
+  const e = d.env || {};
+  $('env-fa').textContent = e.OLLAMA_FLASH_ATTENTION ?? '–';
+  $('env-kv').textContent = e.OLLAMA_KV_CACHE_TYPE ?? '–';
+  const ka = e.OLLAMA_KEEP_ALIVE;
+  $('env-ka').textContent = ka == null ? '–' : (ka.startsWith('2562047h') || ka === '-1' ? '∞' : ka);
+  $('updated').textContent = new Date().toLocaleTimeString();
+}
+
+function renderGpu(g) {
+  $('gpu-none').hidden = !!g;
+  $('gpu-body').hidden = !g;
+  if (!g) { $('gpu-name').textContent = ''; return; }
+  $('gpu-name').textContent = g.name;
+  $('gpu-util').style.width = g.util + '%';
+  $('gpu-util-v').textContent = g.util + ' %';
+  const pct = g.mem_total ? Math.round(g.mem_used / g.mem_total * 100) : 0;
+  const mem = $('gpu-mem'); mem.style.width = pct + '%'; mem.className = pct >= 90 ? 'hot' : '';
+  $('gpu-mem-v').textContent = `${mibToGb(g.mem_used)} / ${mibToGb(g.mem_total)} GB`;
+  $('gpu-temp').textContent = g.temp + ' °C';
+  $('gpu-power').textContent = g.power == null ? '–' : `${g.power.toFixed(0)} W / ${g.power_limit == null ? '–' : g.power_limit.toFixed(0) + ' W'}`;
+}
+
+function renderLoaded(list) {
+  loadedNames = new Set(list.map(m => m.name));
+  $('loaded-none').hidden = list.length > 0;
+  $('loaded').innerHTML = list.map(m => {
+    const det = m.details || {};
+    const ratio = m.size ? Math.round((m.size_vram || 0) / m.size * 100) : 0;
+    return `<tr><td>${esc(m.name)}</td><td>${esc(det.parameter_size || '')}</td><td>${esc(det.quantization_level || '')}</td>
+      <td class="num">${gb(m.size_vram || 0)}</td><td class="num">${ratio}%</td><td class="num">${m.context_length ?? ''}</td>
+      <td><button data-act="unload" data-model="${esc(m.name)}">언로드</button><span class="err" id="err-u-${esc(m.name)}"></span></td></tr>`;
+  }).join('');
+}
+
+function renderModels(list) {
+  $('models').innerHTML = list.map(m => {
+    const det = m.details || {};
+    const on = loadedNames.has(m.name);
+    return `<tr><td>${esc(m.name)}</td><td class="num">${gb(m.size || 0)}</td><td>${esc(det.family || '')}</td><td>${esc(det.parameter_size || '')}</td>
+      <td>${on ? '<span class="badge">로드됨</span>' : ''}</td>
+      <td>${on ? '' : `<button data-act="load" data-model="${esc(m.name)}">로드</button>`}<span class="err" id="err-l-${esc(m.name)}"></span></td></tr>`;
+  }).join('');
+  const sel = $('model-select'), cur = sel.value;
+  sel.innerHTML = list.map(m => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join('');
+  if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+  else if (loadedNames.size) sel.value = [...loadedNames][0];
+}
+
+async function pollStatus() {
+  try {
+    const d = await (await fetch('/api/status')).json();
+    renderHeader(d); renderGpu(d.gpu); renderLoaded(d.loaded || []); renderModels(d.models || []);
+  } catch (e) {
+    $('dot').className = 'dot off'; $('online').textContent = '대시보드 서버 응답 없음';
+  }
+}
+
+async function pollLog() {
+  if (!$('log-auto').checked) return;
+  try {
+    const d = await (await fetch('/api/log?lines=100')).json();
+    $('log-path').textContent = d.path;
+    if (d.lines === null) { $('log').textContent = '로그 파일을 찾을 수 없음: ' + d.path; return; }
+    const f = $('log-filter').value.trim();
+    const lines = f ? d.lines.filter(l => l.includes(f)) : d.lines;
+    const el = $('log'), stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 4;
+    el.textContent = lines.join('\n');
+    if (stick) el.scrollTop = el.scrollHeight;
+  } catch (e) { /* keep last content */ }
+}
+
+async function modelAction(act, model) {
+  const err = $(`err-${act === 'load' ? 'l' : 'u'}-${model}`);
+  const btn = document.querySelector(`button[data-act="${act}"][data-model="${CSS.escape(model)}"]`);
+  if (btn) { btn.disabled = true; btn.textContent = act === 'load' ? '로드 중…' : '언로드 중…'; }
+  if (err) err.textContent = '';
+  try {
+    const r = await fetch('/api/' + act, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model }) });
+    if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.detail || r.statusText); }
+  } catch (e) {
+    if (err) err.textContent = e.message;
+    if (btn) { btn.disabled = false; btn.textContent = act === 'load' ? '로드' : '언로드'; }
+  }
+  await pollStatus();
+}
+
+document.addEventListener('click', e => {
+  const b = e.target.closest('button[data-act]');
+  if (b) modelAction(b.dataset.act, b.dataset.model);
+});
+
+const s = ns => (ns / 1e9).toFixed(2) + 's';
+const tps = (n, ns) => ns ? (n / (ns / 1e9)).toFixed(1) : '–';
+
+async function sendPrompt() {
+  if (busy) return;
+  const model = $('model-select').value, prompt = $('prompt').value.trim();
+  if (!model || !prompt) return;
+  busy = true; $('send').disabled = true;
+  const out = $('answer'); out.className = ''; out.textContent = ''; $('stats').textContent = '';
+  try {
+    const r = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, prompt }) });
+    const reader = r.body.getReader(), dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
+        if (!line) continue;
+        let j; try { j = JSON.parse(line); } catch { continue; }
+        if (j.error) { out.innerHTML += `<span style="color:var(--bad)">오류: ${esc(j.error)}</span>`; continue; }
+        if (j.message && j.message.content) { out.textContent += j.message.content; out.scrollTop = out.scrollHeight; }
+        if (j.done) {
+          $('stats').textContent = `로드 ${s(j.load_duration || 0)} │ 프롬프트 ${j.prompt_eval_count ?? 0}tok ${tps(j.prompt_eval_count, j.prompt_eval_duration)}tok/s │ 생성 ${j.eval_count ?? 0}tok ${tps(j.eval_count, j.eval_duration)}tok/s │ 총 ${s(j.total_duration || 0)}`;
+        }
+      }
+    }
+  } catch (e) {
+    out.innerHTML = `<span style="color:var(--bad)">오류: ${esc(e.message)}</span>`;
+  } finally {
+    busy = false; $('send').disabled = false;
+  }
+}
+$('send').addEventListener('click', sendPrompt);
+$('prompt').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) sendPrompt(); });
+$('log-filter').addEventListener('input', pollLog);
+$('log-auto').addEventListener('change', pollLog);
+
+pollStatus(); pollLog();
+setInterval(pollStatus, 2000);
+setInterval(pollLog, 5000);
+</script>
+</body>
+</html>

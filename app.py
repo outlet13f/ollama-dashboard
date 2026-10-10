@@ -1,17 +1,22 @@
 """Ollama dashboard: FastAPI routes and CLI entry point."""
 from __future__ import annotations
 
+import argparse
 import asyncio
+import threading
+import webbrowser
 from pathlib import Path
 from typing import Callable
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from collectors import OllamaClient, OllamaError, default_log_path, parse_env_from_log, read_gpu, tail_log
 
 ENV_SCAN_LINES = 2000  # how far back to look for Ollama's startup config line
+INDEX_HTML = Path(__file__).parent / "static" / "index.html"
+DEFAULT_PORT = 8585
 
 
 class ModelReq(BaseModel):
@@ -34,6 +39,10 @@ def create_app(client: OllamaClient,
             return await coro
         except Exception:
             return default
+
+    @app.get("/", include_in_schema=False)
+    async def index():
+        return FileResponse(INDEX_HTML, media_type="text/html")
 
     @app.get("/api/status")
     async def status():
@@ -81,3 +90,21 @@ def create_app(client: OllamaClient,
         return StreamingResponse(gen(), media_type="application/x-ndjson")
 
     return app
+
+
+def main(argv: list[str] | None = None) -> None:
+    import uvicorn
+
+    parser = argparse.ArgumentParser(description="Ollama / GPU status dashboard")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--no-browser", action="store_true", help="do not open the browser on start")
+    args = parser.parse_args(argv)
+
+    url = f"http://127.0.0.1:{args.port}"
+    if not args.no_browser:
+        threading.Timer(1.0, webbrowser.open, [url]).start()
+    uvicorn.run(create_app(OllamaClient()), host="127.0.0.1", port=args.port, log_level="warning")
+
+
+if __name__ == "__main__":
+    main()

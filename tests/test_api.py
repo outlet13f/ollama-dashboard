@@ -119,3 +119,10 @@ def test_chat_unknown_model_emits_error_chunk(tmp_path):
     with make(tmp_path).stream("POST", "/api/chat", json={"model": "nope", "prompt": "hi"}) as r:
         lines = [json.loads(l) for l in r.iter_lines() if l]
     assert len(lines) == 1 and "not found" in lines[0]["error"]
+
+
+# ---- Task 5: root page ----
+def test_root_serves_html(tmp_path):
+    r = make(tmp_path).get("/")
+    assert r.status_code == 200 and "text/html" in r.headers["content-type"]
+    assert "Ollama" in r.text
