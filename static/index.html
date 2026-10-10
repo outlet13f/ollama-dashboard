@@ -96,6 +96,7 @@
     <h2>서버 로그 <span id="log-path" class="muted" style="font-size:11px;text-transform:none;letter-spacing:0"></span>
       <span class="right">
         <input id="log-filter" type="text" placeholder="필터" style="width:160px">
+        <label><input id="log-hide-gin" type="checkbox" checked> 요청 로그 숨기기</label>
         <label><input id="log-auto" type="checkbox" checked> 자동갱신</label>
       </span>
     </h2>
@@ -178,11 +179,14 @@ async function pollStatus() {
 async function pollLog() {
   if (!$('log-auto').checked) return;
   try {
-    const d = await (await fetch('/api/log?lines=100')).json();
+    const hideGin = $('log-hide-gin').checked;
+    const d = await (await fetch('/api/log?lines=' + (hideGin ? 400 : 100))).json();
     $('log-path').textContent = d.path;
     if (d.lines === null) { $('log').textContent = '로그 파일을 찾을 수 없음: ' + d.path; return; }
     const f = $('log-filter').value.trim();
-    const lines = f ? d.lines.filter(l => l.includes(f)) : d.lines;
+    let lines = hideGin ? d.lines.filter(l => !l.includes('[GIN]')) : d.lines;
+    if (f) lines = lines.filter(l => l.includes(f));
+    lines = lines.slice(-100);
     const el = $('log'), stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 4;
     el.textContent = lines.join('\n');
     if (stick) el.scrollTop = el.scrollHeight;
@@ -218,6 +222,7 @@ async function sendPrompt() {
   if (!model || !prompt) return;
   busy = true; $('send').disabled = true;
   const out = $('answer'); out.className = ''; out.textContent = ''; $('stats').textContent = '';
+  let thinkChars = 0;
   try {
     const r = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, prompt }) });
     const reader = r.body.getReader(), dec = new TextDecoder();
@@ -231,8 +236,17 @@ async function sendPrompt() {
         const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
         if (!line) continue;
         let j; try { j = JSON.parse(line); } catch { continue; }
-        if (j.error) { out.innerHTML += `<span style="color:var(--bad)">오류: ${esc(j.error)}</span>`; continue; }
-        if (j.message && j.message.content) { out.textContent += j.message.content; out.scrollTop = out.scrollHeight; }
+        if (j.error) { out.insertAdjacentHTML('beforeend', `<span style="color:var(--bad)">오류: ${esc(j.error)}</span>`); continue; }
+        if (j.message && j.message.thinking) {
+          let th = $('thinking');
+          if (!th) { out.insertAdjacentHTML('afterbegin', '<details id="thinking" open><summary class="muted">생각 중…</summary><div class="muted" id="thinking-text"></div></details>'); th = $('thinking'); }
+          $('thinking-text').textContent += j.message.thinking; thinkChars += j.message.thinking.length; out.scrollTop = out.scrollHeight;
+        }
+        if (j.message && j.message.content) {
+          const th = $('thinking');
+          if (th && th.open) { th.open = false; th.querySelector('summary').textContent = `생각 (${thinkChars}자)`; }
+          out.append(j.message.content); out.scrollTop = out.scrollHeight;
+        }
         if (j.done) {
           $('stats').textContent = `로드 ${s(j.load_duration || 0)} │ 프롬프트 ${j.prompt_eval_count ?? 0}tok ${tps(j.prompt_eval_count, j.prompt_eval_duration)}tok/s │ 생성 ${j.eval_count ?? 0}tok ${tps(j.eval_count, j.eval_duration)}tok/s │ 총 ${s(j.total_duration || 0)}`;
         }
@@ -247,6 +261,7 @@ async function sendPrompt() {
 $('send').addEventListener('click', sendPrompt);
 $('prompt').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) sendPrompt(); });
 $('log-filter').addEventListener('input', pollLog);
+$('log-hide-gin').addEventListener('change', pollLog);
 $('log-auto').addEventListener('change', pollLog);
 
 pollStatus(); pollLog();

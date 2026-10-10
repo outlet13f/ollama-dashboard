@@ -126,3 +126,7 @@ def test_root_serves_html(tmp_path):
     r = make(tmp_path).get("/")
     assert r.status_code == 200 and "text/html" in r.headers["content-type"]
     assert "Ollama" in r.text
+
+
+def test_favicon_returns_204_not_404(tmp_path):
+    assert make(tmp_path).get("/favicon.ico").status_code == 204

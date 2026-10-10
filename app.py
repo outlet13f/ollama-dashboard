@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Callable
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from collectors import OllamaClient, OllamaError, default_log_path, parse_env_from_log, read_gpu, tail_log
@@ -43,6 +43,10 @@ def create_app(client: OllamaClient,
     @app.get("/", include_in_schema=False)
     async def index():
         return FileResponse(INDEX_HTML, media_type="text/html")
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon():
+        return Response(status_code=204)
 
     @app.get("/api/status")
     async def status():
