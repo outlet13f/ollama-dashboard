@@ -89,12 +89,34 @@ def create_app(client: OllamaClient,
             raise HTTPException(status_code=502, detail=str(e))
         return {"ok": True}
 
-    @app.post("/api/chat")
-    async def chat(req: ChatReq):
+    def ndjson(stream):
         async def gen():
-            async for line in client.chat_stream(req.model, req.prompt):
+            async for line in stream:
                 yield line + "\n"
         return StreamingResponse(gen(), media_type="application/x-ndjson")
+
+    @app.post("/api/chat")
+    async def chat(req: ChatReq):
+        return ndjson(client.chat_stream(req.model, req.prompt))
+
+    @app.post("/api/pull")
+    async def pull(req: ModelReq):
+        return ndjson(client.pull_stream(req.model))
+
+    @app.post("/api/delete")
+    async def delete(req: ModelReq):
+        try:
+            await client.delete(req.model)
+        except OllamaError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        return {"ok": True}
+
+    @app.get("/api/show")
+    async def show(model: str = Query(..., min_length=1)):
+        try:
+            return await client.show(model)
+        except OllamaError as e:
+            raise HTTPException(status_code=502, detail=str(e))
 
     return app
 

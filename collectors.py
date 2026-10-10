@@ -234,10 +234,10 @@ class OllamaClient:
     async def unload(self, model: str) -> None:
         await self._generate_keep_alive(model, 0)
 
-    async def chat_stream(self, model: str, prompt: str) -> AsyncIterator[str]:
-        payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "stream": True}
+    async def _stream(self, path: str, payload: dict) -> AsyncIterator[str]:
+        """POST and relay Ollama's NDJSON stream; a failure becomes one {"error"} line."""
         try:
-            async with self._client.stream("POST", "/api/chat", json=payload,
+            async with self._client.stream("POST", path, json=payload,
                                            timeout=self._stream_timeout) as resp:
                 if resp.status_code >= 300:
                     await resp.aread()
@@ -248,6 +248,29 @@ class OllamaClient:
                         yield line
         except httpx.HTTPError as e:
             yield json.dumps({"error": str(e) or type(e).__name__})
+
+    def chat_stream(self, model: str, prompt: str) -> AsyncIterator[str]:
+        return self._stream("/api/chat", {"model": model, "stream": True,
+                                          "messages": [{"role": "user", "content": prompt}]})
+
+    def pull_stream(self, model: str) -> AsyncIterator[str]:
+        return self._stream("/api/pull", {"model": model, "stream": True})
+
+    async def _request_ok(self, method: str, path: str, payload: dict) -> httpx.Response:
+        try:
+            resp = await self._client.request(method, path, json=payload,
+                                              timeout=httpx.Timeout(connect=3.0, read=60.0, write=3.0, pool=3.0))
+        except httpx.HTTPError as e:
+            raise OllamaError(str(e)) from e
+        if resp.status_code >= 300:
+            raise OllamaError(_error_text(resp))
+        return resp
+
+    async def delete(self, model: str) -> None:
+        await self._request_ok("DELETE", "/api/delete", {"model": model})
+
+    async def show(self, model: str) -> dict:
+        return (await self._request_ok("POST", "/api/show", {"model": model})).json()
 
 
 def _error_text(resp: httpx.Response) -> str:
