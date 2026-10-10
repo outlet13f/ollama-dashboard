@@ -4,9 +4,11 @@
 
 - Ollama 온라인 여부, 버전, 서버 시작 환경변수 (FLASH_ATTENTION / KV_CACHE_TYPE / KEEP_ALIVE)
 - GPU 사용률, VRAM, 온도, 전력 (nvidia-smi)
-- 로드된 모델과 VRAM 점유, 보유 모델 목록, 로드/언로드 버튼
-- 테스트 프롬프트: 스트리밍 응답과 tokens/sec, 로드 시간
-- server.log 마지막 100줄, 필터, 자동갱신
+- CPU 사용률, RAM, 모델 저장 디스크 여유 공간 (psutil)
+- 로드된 모델과 VRAM 점유, 로드/언로드 버튼
+- 보유 모델 관리: 받기(진행률·속도·취소), 상세 정보(컨텍스트, capabilities, 파라미터, 라이선스, 템플릿), 삭제
+- 테스트 프롬프트: 스트리밍 응답(thinking 포함)과 tokens/sec, 로드 시간
+- server.log 마지막 100줄, 요청 로그 숨기기, 필터, 자동갱신
 
 ## 설치 및 실행
 

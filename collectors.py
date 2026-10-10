@@ -155,6 +155,51 @@ def read_gpu(timeout: float = 3.0) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
+# CPU / RAM / disk
+# ---------------------------------------------------------------------------
+def models_dir() -> Path:
+    """Where Ollama stores model blobs: OLLAMA_MODELS or ~/.ollama/models."""
+    override = os.environ.get("OLLAMA_MODELS")
+    return Path(override) if override else Path.home() / ".ollama" / "models"
+
+
+def _cpu_name() -> str:
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            r"HARDWARE\DESCRIPTION\System\CentralProcessor\0") as k:
+            return str(winreg.QueryValueEx(k, "ProcessorNameString")[0]).strip()
+    except Exception:
+        import platform
+
+        return platform.processor() or platform.machine() or "CPU"
+
+
+_CPU_NAME = _cpu_name()
+
+
+def read_system() -> dict:
+    """CPU utilisation, RAM and free space on the drive holding Ollama's models."""
+    import psutil
+
+    vm = psutil.virtual_memory()
+    path = models_dir()
+    probe = path if path.exists() else path.anchor or Path.home()
+    du = psutil.disk_usage(str(probe))
+    return {
+        "cpu_name": _CPU_NAME,
+        "cpu_percent": psutil.cpu_percent(interval=None),
+        "cpu_count": psutil.cpu_count(logical=True) or 1,
+        "ram_used": vm.used,
+        "ram_total": vm.total,
+        "disk_path": str(path),
+        "disk_free": du.free,
+        "disk_total": du.total,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Ollama API client
 # ---------------------------------------------------------------------------
 DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"

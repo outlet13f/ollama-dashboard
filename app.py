@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from collectors import EnvTracker, OllamaClient, OllamaError, default_log_path, read_gpu, tail_log
+from collectors import EnvTracker, OllamaClient, OllamaError, default_log_path, read_gpu, read_system, tail_log
 
 INDEX_HTML = Path(__file__).parent / "static" / "index.html"
 DEFAULT_PORT = 8585
@@ -30,6 +30,7 @@ class ChatReq(BaseModel):
 
 def create_app(client: OllamaClient,
                gpu_reader: Callable[[], dict | None] = read_gpu,
+               system_reader: Callable[[], dict] = read_system,
                log_path: Path | None = None) -> FastAPI:
     app = FastAPI(title="Ollama Dashboard")
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
@@ -52,17 +53,19 @@ def create_app(client: OllamaClient,
 
     @app.get("/api/status")
     async def status():
-        version, loaded, models, gpu, env = await asyncio.gather(
+        version, loaded, models, gpu, system, env = await asyncio.gather(
             _safe(client.version(), None),
             _safe(client.ps(), []),
             _safe(client.tags(), []),
             _safe(asyncio.to_thread(gpu_reader), None),
+            _safe(asyncio.to_thread(system_reader), None),
             _safe(asyncio.to_thread(env_tracker.read), {}),
         )
         return {
             "ollama": {"online": version is not None, "version": version},
             "env": env,
             "gpu": gpu,
+            "system": system,
             "loaded": loaded,
             "models": models,
         }

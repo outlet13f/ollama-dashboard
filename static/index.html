@@ -29,6 +29,7 @@
   .bar > i { display: block; height: 100%; background: var(--accent); transition: width .4s; }
   .bar > i.hot { background: var(--warn); }
   .val { width: 110px; text-align: right; font-variant-numeric: tabular-nums; flex: none; }
+  #sys-body .val { width: 170px; }
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
   th { color: var(--muted); font-weight: 500; font-size: 12px; }
@@ -44,6 +45,10 @@
   textarea { width: 100%; min-height: 70px; resize: vertical; }
   #answer { white-space: pre-wrap; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px; min-height: 80px; max-height: 320px; overflow: auto; margin-top: 10px; }
   #stats { margin-top: 8px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  tr.details td { white-space: normal; background: var(--bg); font-size: 13px; }
+  .kv { display: grid; grid-template-columns: 120px 1fr; gap: 4px 12px; }
+  .kv dt { color: var(--muted); } .kv dd { margin: 0; word-break: break-word; }
+  .kv pre { margin: 0; white-space: pre-wrap; font-size: 12px; max-height: 160px; overflow: auto; }
   #log { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font: 12px/1.45 ui-monospace, Consolas, monospace; max-height: 340px; overflow: auto; white-space: pre; color: #b9c0cc; }
   @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
 </style>
@@ -71,6 +76,17 @@
   </section>
 
   <section class="card">
+    <h2>시스템 <span id="cpu-name" class="right muted"></span></h2>
+    <div id="sys-body">
+      <div class="row"><span class="label">CPU</span><div class="bar"><i id="cpu-util"></i></div><span class="val" id="cpu-util-v">–</span></div>
+      <div class="row"><span class="label">RAM</span><div class="bar"><i id="ram"></i></div><span class="val" id="ram-v">–</span></div>
+      <div class="row"><span class="label">디스크</span><div class="bar"><i id="disk"></i></div><span class="val" id="disk-v">–</span></div>
+      <div class="row muted" style="font-size:12px"><span class="label"></span><span id="disk-path"></span></div>
+    </div>
+    <div id="sys-none" class="muted" hidden>시스템 정보 없음</div>
+  </section>
+
+  <section class="card wide">
     <h2>로드된 모델</h2>
     <table><thead><tr><th>모델</th><th>크기</th><th>양자화</th><th class="num">VRAM</th><th class="num">GPU</th><th class="num">ctx</th><th></th></tr></thead>
     <tbody id="loaded"></tbody></table>
@@ -78,7 +94,18 @@
   </section>
 
   <section class="card wide">
-    <h2>보유 모델</h2>
+    <h2>보유 모델
+      <span class="right">
+        <input id="pull-name" type="text" placeholder="모델 이름 (예: qwen3.5:0.8b)" style="width:240px">
+        <button id="pull-btn" class="primary">받기</button>
+      </span>
+    </h2>
+    <div id="pull-row" hidden>
+      <div class="row"><span class="label" style="width:auto">받는 중</span><b id="pull-model"></b><span id="pull-status" class="muted"></span>
+        <span style="margin-left:auto"></span><button id="pull-cancel">취소</button></div>
+      <div class="row"><div class="bar"><i id="pull-bar"></i></div><span class="val" style="width:200px" id="pull-v">–</span></div>
+      <div id="pull-err" class="err"></div>
+    </div>
     <table><thead><tr><th>모델</th><th class="num">용량</th><th>패밀리</th><th>파라미터</th><th>상태</th><th></th></tr></thead>
     <tbody id="models"></tbody></table>
   </section>
@@ -151,6 +178,22 @@ function renderGpu(g) {
   $('gpu-power').textContent = g.power == null ? '–' : `${g.power.toFixed(0)} W / ${g.power_limit == null ? '–' : g.power_limit.toFixed(0) + ' W'}`;
 }
 
+function renderSystem(s) {
+  $('sys-none').hidden = !!s;
+  $('sys-body').hidden = !s;
+  if (!s) { $('cpu-name').textContent = ''; return; }
+  $('cpu-name').textContent = `${s.cpu_name} · ${s.cpu_count}스레드`;
+  const cpu = Math.round(s.cpu_percent);
+  $('cpu-util').style.width = cpu + '%'; $('cpu-util-v').textContent = cpu + ' %';
+  const rp = s.ram_total ? Math.round(s.ram_used / s.ram_total * 100) : 0;
+  const ram = $('ram'); ram.style.width = rp + '%'; ram.className = rp >= 90 ? 'hot' : '';
+  $('ram-v').textContent = `${gb(s.ram_used)} / ${gb(s.ram_total)}`;
+  const used = s.disk_total - s.disk_free, dp = s.disk_total ? Math.round(used / s.disk_total * 100) : 0;
+  const disk = $('disk'); disk.style.width = dp + '%'; disk.className = dp >= 90 ? 'hot' : '';
+  $('disk-v').textContent = `여유 ${gb(s.disk_free)} / ${gb(s.disk_total)}`;
+  $('disk-path').textContent = '모델 저장소: ' + s.disk_path;
+}
+
 function renderLoaded(list) {
   loadedNames = new Set(list.map(m => m.name));
   $('loaded-none').hidden = list.length > 0;
@@ -163,13 +206,39 @@ function renderLoaded(list) {
   }).join('');
 }
 
+const openDetails = new Set();   // model names whose details row is expanded
+const showCache = new Map();     // model name -> /api/show result (or {error})
+
+function detailsRow(name) {
+  const d = showCache.get(name);
+  if (!d) return `<tr class="details"><td colspan="6" class="muted">불러오는 중…</td></tr>`;
+  if (d.error) return `<tr class="details"><td colspan="6"><span class="err">${esc(d.error)}</span></td></tr>`;
+  const info = d.model_info || {};
+  const ctxKey = Object.keys(info).find(k => k.endsWith('.context_length'));
+  const params = (d.parameters || '').trim();
+  return `<tr class="details"><td colspan="6"><dl class="kv">
+    <dt>컨텍스트</dt><dd>${ctxKey ? info[ctxKey].toLocaleString() : '–'}</dd>
+    <dt>capabilities</dt><dd>${esc((d.capabilities || []).join(', ') || '–')}</dd>
+    <dt>아키텍처</dt><dd>${esc(info['general.architecture'] || (d.details || {}).family || '–')}</dd>
+    <dt>수정일</dt><dd>${esc((d.modified_at || '').replace('T', ' ').slice(0, 19) || '–')}</dd>
+    <dt>파라미터 설정</dt><dd>${params ? `<pre>${esc(params)}</pre>` : '–'}</dd>
+    <dt>라이선스</dt><dd>${esc((d.license || '').trim().slice(0, 300) || '–')}${(d.license || '').length > 300 ? '…' : ''}</dd>
+    <dt>템플릿</dt><dd><details><summary class="muted">보기</summary><pre>${esc(d.template || '')}</pre></details></dd>
+  </dl></td></tr>`;
+}
+
 function renderModels(list) {
   $('models').innerHTML = list.map(m => {
     const det = m.details || {};
     const on = loadedNames.has(m.name);
+    const open = openDetails.has(m.name);
     return `<tr><td>${esc(m.name)}</td><td class="num">${gb(m.size || 0)}</td><td>${esc(det.family || '')}</td><td>${esc(det.parameter_size || '')}</td>
       <td>${on ? '<span class="badge">로드됨</span>' : ''}</td>
-      <td>${on ? '' : actionCell('load', m.name)}</td></tr>`;
+      <td>${on ? '' : actionCell('load', m.name)}
+          <button data-act="show" data-model="${esc(m.name)}">${open ? '닫기' : '상세'}</button>
+          <button data-act="delete" data-model="${esc(m.name)}" ${pending.get(m.name) === 'delete' ? 'disabled' : ''}>${pending.get(m.name) === 'delete' ? '삭제 중…' : '삭제'}</button>
+          ${!pending.has(m.name) && errors.get(m.name) && on ? `<span class="err">${esc(errors.get(m.name))}</span>` : ''}</td></tr>` +
+      (open ? detailsRow(m.name) : '');
   }).join('');
   const sel = $('model-select'), cur = sel.value;
   sel.innerHTML = list.map(m => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join('');
@@ -180,7 +249,7 @@ function renderModels(list) {
 async function pollStatus() {
   try {
     const d = await (await fetch('/api/status')).json();
-    renderHeader(d); renderGpu(d.gpu); renderLoaded(d.loaded || []); renderModels(d.models || []);
+    renderHeader(d); renderGpu(d.gpu); renderSystem(d.system); renderLoaded(d.loaded || []); renderModels(d.models || []);
   } catch (e) {
     $('dot').className = 'dot off'; $('online').textContent = '대시보드 서버 응답 없음';
   }
@@ -217,9 +286,94 @@ async function modelAction(act, model) {
   await pollStatus();
 }
 
+async function toggleShow(model) {
+  if (openDetails.has(model)) { openDetails.delete(model); await pollStatus(); return; }
+  openDetails.add(model);
+  await pollStatus();
+  if (!showCache.has(model)) {
+    try {
+      const r = await fetch('/api/show?model=' + encodeURIComponent(model));
+      const j = await r.json();
+      showCache.set(model, r.ok ? j : { error: j.detail || r.statusText });
+    } catch (e) { showCache.set(model, { error: e.message }); }
+    await pollStatus();
+  }
+}
+
+async function deleteModel(model) {
+  if (!confirm(`'${model}' 모델을 디스크에서 삭제합니다. 계속할까요?`)) return;
+  pending.set(model, 'delete'); errors.delete(model);
+  await pollStatus();
+  try {
+    const r = await fetch('/api/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model }) });
+    if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.detail || r.statusText); }
+    showCache.delete(model); openDetails.delete(model);
+  } catch (e) {
+    errors.set(model, e.message);
+  } finally {
+    pending.delete(model);
+  }
+  await pollStatus();
+}
+
+let pullAbort = null;
+async function pullModel() {
+  const name = $('pull-name').value.trim();
+  if (!name || pullAbort) return;
+  pullAbort = new AbortController();
+  const row = $('pull-row'); row.hidden = false;
+  $('pull-model').textContent = name; $('pull-status').textContent = ''; $('pull-err').textContent = '';
+  $('pull-bar').style.width = '0%'; $('pull-v').textContent = '–';
+  $('pull-btn').disabled = true;
+  const t0 = performance.now(); let lastT = t0, lastDone = 0, rate = 0, biggest = 0;
+  try {
+    const r = await fetch('/api/pull', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: name }), signal: pullAbort.signal });
+    const reader = r.body.getReader(), dec = new TextDecoder(); let buf = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
+        if (!line) continue;
+        let j; try { j = JSON.parse(line); } catch { continue; }
+        if (j.error) { $('pull-err').textContent = '오류: ' + j.error; continue; }
+        $('pull-status').textContent = j.status || '';
+        if (j.total && j.total >= biggest) {   // follow the largest layer; ignore tiny manifest/config blobs
+          if (j.total > biggest) { biggest = j.total; lastDone = 0; lastT = performance.now(); rate = 0; }
+          const pct = Math.round((j.completed || 0) / j.total * 100);
+          $('pull-bar').style.width = pct + '%';
+          const now = performance.now();
+          if (now - lastT > 1000) { rate = Math.max(0, ((j.completed || 0) - lastDone) / ((now - lastT) / 1000)); lastT = now; lastDone = j.completed || 0; }
+          $('pull-v').textContent = `${gb(j.completed || 0)} / ${gb(j.total)}  ${pct}%  ${(rate / 1048576).toFixed(1)} MB/s`;
+        }
+        if (j.status === 'success') {
+          $('pull-status').textContent = `완료 (${((performance.now() - t0) / 1000).toFixed(0)}s)`;
+          $('pull-bar').style.width = '100%';
+          $('pull-v').textContent = biggest ? `${gb(biggest)} 받음` : '완료';
+        }
+      }
+    }
+  } catch (e) {
+    $('pull-err').textContent = e.name === 'AbortError' ? '취소됨' : '오류: ' + e.message;
+  } finally {
+    pullAbort = null; $('pull-btn').disabled = false;
+    await pollStatus();
+    setTimeout(() => { if (!pullAbort) row.hidden = true; }, 8000);
+  }
+}
+$('pull-btn').addEventListener('click', pullModel);
+$('pull-name').addEventListener('keydown', e => { if (e.key === 'Enter') pullModel(); });
+$('pull-cancel').addEventListener('click', () => { if (pullAbort) pullAbort.abort(); });
+
 document.addEventListener('click', e => {
   const b = e.target.closest('button[data-act]');
-  if (b) modelAction(b.dataset.act, b.dataset.model);
+  if (!b) return;
+  const { act, model } = b.dataset;
+  if (act === 'show') toggleShow(model);
+  else if (act === 'delete') deleteModel(model);
+  else modelAction(act, model);
 });
 
 const s = ns => (ns / 1e9).toFixed(2) + 's';
